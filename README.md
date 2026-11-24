@@ -1,4 +1,4 @@
-# Alarm Clock Mini v2
+# Alarm_clock_mini_v2.1
 
 A sophisticated bedside alarm clock built on ESP32 with a fully customizable LVGL UI, dual LED strips, environmental sensing, and hardware rotary encoder + button navigation.
 

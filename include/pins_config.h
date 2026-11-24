@@ -1,7 +1,7 @@
 #pragma once
 
 // =============================================================================
-// Pin Definitions — Alarm Clock Mini V2
+// Pin Definitions — Alarm_clock_mini_v2.1
 // Generated from pin_definitions.csv
 // =============================================================================
 
