@@ -1,5 +1,6 @@
 #include "ui_alarm_menu.h"
 
+#include "manager_alarm.h"
 #include "manager_audio.h"
 #include "manager_led.h"
 #include "manager_storage.h"
@@ -16,7 +17,7 @@ static constexpr int HEADER_H = 34;
 static constexpr int CONTENT_Y = 36;
 static constexpr int CONTENT_H = DISP_H - CONTENT_Y;
 
-static constexpr uint8_t FIELD_COUNT = 14;
+static constexpr uint8_t FIELD_COUNT = 17;
 static constexpr uint8_t VISIBLE_COLS = 4;
 static constexpr uint8_t LEVEL_COUNT = (FIELD_COUNT + VISIBLE_COLS - 1) / VISIBLE_COLS;
 static constexpr uint8_t REPEAT_ONCE = 0x80;
@@ -51,6 +52,9 @@ enum class AlarmField : uint8_t {
     REPEAT,
     AUTO_LOUD,
     AUTO_DISMISS,
+    PROFILE1,
+    PROFILE2,
+    PROFILE3,
 };
 
 struct UiAlarmState {
@@ -103,6 +107,32 @@ static bool g_repeat_open = false;
 static uint8_t g_repeat_focus = 0;
 static uint8_t g_repeat_edit_mask = REPEAT_ONCE;
 
+static constexpr uint8_t KB_KEY_COUNT = 39;
+static constexpr uint8_t KB_COLS = 13;
+
+static lv_obj_t *g_profile_screen = nullptr;
+static lv_obj_t *g_profile_header_cancel_bg = nullptr;
+static lv_obj_t *g_profile_header_accept_bg = nullptr;
+static lv_obj_t *g_pf_widgets[3] = {nullptr};
+static lv_obj_t *g_pf_arcs[3] = {nullptr};
+static lv_obj_t *g_pf_titles[3] = {nullptr};
+static lv_obj_t *g_pf_labels[3] = {nullptr};
+static bool g_profile_open = false;
+static uint8_t g_profile_idx = 0;
+static uint8_t g_profile_sel = 0;
+static AlarmProfile g_profile_edit = {};
+
+static lv_obj_t *g_kb_screen = nullptr;
+static lv_obj_t *g_kb_header_cancel_bg = nullptr;
+static lv_obj_t *g_kb_header_accept_bg = nullptr;
+static lv_obj_t *g_kb_text_label = nullptr;
+static lv_obj_t *g_kb_keys[KB_KEY_COUNT] = {nullptr};
+static lv_obj_t *g_kb_key_labels[KB_KEY_COUNT] = {nullptr};
+static bool g_kb_open = false;
+static bool g_kb_lower = false;
+static uint8_t g_kb_focus = 0;
+static char g_kb_backup[ALARM_NAME_MAX + 1] = {0};
+
 static lv_obj_t *g_sound_screen = nullptr;
 static lv_obj_t *g_sound_dir_label = nullptr;
 static lv_obj_t *g_sound_rows[BROWSER_VISIBLE_ROWS] = {nullptr};
@@ -137,6 +167,10 @@ enum class ModalCloseAction : uint8_t {
     REPEAT_ACCEPT,
     SOUND_CANCEL,
     SOUND_ACCEPT,
+    PROFILE_CANCEL,
+    PROFILE_ACCEPT,
+    KB_CANCEL,
+    KB_ACCEPT,
 };
 
 static ModalCloseAction g_modal_close_action = ModalCloseAction::NONE;
@@ -149,14 +183,20 @@ static constexpr uint32_t RENDER_THROTTLE_US = 150000;  // 150ms throttle
 
 static void close_repeat_window(bool apply_changes);
 static void close_sound_window(bool apply_changes);
+static void close_profile_window(bool apply_changes);
+static void close_kb_window(bool apply_changes);
 
 static lv_obj_t *current_cancel_bg() {
+    if (g_kb_open) return g_kb_header_cancel_bg;
+    if (g_profile_open) return g_profile_header_cancel_bg;
     if (g_sound_state.open) return g_sound_header_cancel_bg;
     if (g_repeat_open) return g_repeat_header_cancel_bg;
     return g_alarm_header_cancel_bg;
 }
 
 static lv_obj_t *current_accept_bg() {
+    if (g_kb_open) return g_kb_header_accept_bg;
+    if (g_profile_open) return g_profile_header_accept_bg;
     if (g_sound_state.open) return g_sound_header_accept_bg;
     if (g_repeat_open) return g_repeat_header_accept_bg;
     return g_alarm_header_accept_bg;
@@ -231,6 +271,18 @@ static void modal_close_timer_cb(lv_timer_t *timer) {
             break;
         case ModalCloseAction::SOUND_ACCEPT:
             close_sound_window(true);
+            break;
+        case ModalCloseAction::PROFILE_CANCEL:
+            close_profile_window(false);
+            break;
+        case ModalCloseAction::PROFILE_ACCEPT:
+            close_profile_window(true);
+            break;
+        case ModalCloseAction::KB_CANCEL:
+            close_kb_window(false);
+            break;
+        case ModalCloseAction::KB_ACCEPT:
+            close_kb_window(true);
             break;
         case ModalCloseAction::NONE:
         default:
@@ -459,7 +511,7 @@ static const char *field_title(uint8_t idx) {
         "Alarm", "Hour", "Minute", "Sound",
         "End\nVol lvl", "End\nSun lvl", "Vol\nRamp", "Sun\nRamp",
         "Snooze", "Snooze\nDuration", "Hold to\nDismiss", "Repeat",
-        "Auto\nLoud", "Auto\nDismiss"
+        "Auto\nLoud", "Auto\nDismiss", "Alarm 1", "Alarm 2", "Alarm 3"
     };
     return titles[idx];
 }
@@ -488,8 +540,21 @@ static uint8_t repeat_slot_to_day_bit(uint8_t slot) {
     }
 }
 
+static bool field_is_profile(uint8_t idx) {
+    return idx >= (uint8_t)AlarmField::PROFILE1 && idx <= (uint8_t)AlarmField::PROFILE3;
+}
+
 static void field_value_text(uint8_t idx, char *buf, size_t len, lv_color_t &color) {
     color = lv_color_white();
+
+    if (field_is_profile(idx)) {
+        const uint8_t p = (uint8_t)(idx - (uint8_t)AlarmField::PROFILE1);
+        const AppSettings &s = storage_manager_get();
+        std::snprintf(buf, len, "%s\n%02u:%02u", s.alarm_profiles[p].name,
+                      (unsigned)s.alarm_profiles[p].hour, (unsigned)s.alarm_profiles[p].minute);
+        if (s.active_profile == p + 1) color = lv_color_make(0x6D, 0xFF, 0x8A);
+        return;
+    }
 
     switch ((AlarmField)idx) {
         case AlarmField::ENABLED:
@@ -619,6 +684,9 @@ static void toggle_repeat_focus() {
 
 static void save_state() {
     AppSettings &s = storage_manager_get();
+    if (g_state.hour != s.alarm_hour || g_state.minute != s.alarm_minute) {
+        s.active_profile = 0;
+    }
     s.alarm_enabled = g_state.enabled;
     s.alarm_hour = g_state.hour;
     s.alarm_minute = g_state.minute;
@@ -637,10 +705,12 @@ static void save_state() {
     copy_str(s.alarm_mp3, sizeof(s.alarm_mp3), g_state.sound_path);
 
     storage_manager_save_alarm();
+    alarm_manager_validate_and_arm();
 }
 
 static void adjust_selected_field(int32_t delta) {
     if (delta == 0) return;
+    if (field_is_profile((uint8_t)g_state.selected)) return;
 
     switch (g_state.selected) {
         case AlarmField::ENABLED:
@@ -807,7 +877,8 @@ static void render_fields() {
             lv_obj_set_style_text_color(g_value_labels[slot], lv_color_white(), 0);
             lv_label_set_text(g_value_labels[slot], value);
         } else {
-            lv_obj_set_style_text_font(g_value_labels[slot], &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_font(g_value_labels[slot],
+                                       field_is_profile(idx) ? &lv_font_montserrat_16 : &lv_font_montserrat_20, 0);
             lv_label_set_text(g_value_labels[slot], value);
             lv_obj_set_style_text_color(g_value_labels[slot], value_color, 0);
         }
@@ -878,6 +949,12 @@ static void apply_header_base(lv_obj_t *screen, const char *title) {
     } else if (screen == g_sound_screen) {
         g_sound_header_cancel_bg = cancel_bg;
         g_sound_header_accept_bg = accept_bg;
+    } else if (screen == g_profile_screen) {
+        g_profile_header_cancel_bg = cancel_bg;
+        g_profile_header_accept_bg = accept_bg;
+    } else if (screen == g_kb_screen) {
+        g_kb_header_cancel_bg = cancel_bg;
+        g_kb_header_accept_bg = accept_bg;
     }
 }
 
@@ -903,7 +980,8 @@ static lv_obj_t *create_value_shell(lv_obj_t *parent, int x) {
     return widget;
 }
 
-static void create_column(lv_obj_t *parent, int x, uint8_t slot) {
+static void create_column_ex(lv_obj_t *parent, int x, lv_obj_t **out_widget, lv_obj_t **out_arc,
+                             lv_obj_t **out_title, lv_obj_t **out_label) {
     lv_obj_t *col = lv_obj_create(parent);
     lv_obj_set_size(col, COL_W, CONTENT_H);
     lv_obj_set_pos(col, x, 0);
@@ -947,10 +1025,15 @@ static void create_column(lv_obj_t *parent, int x, uint8_t slot) {
     lv_obj_set_style_text_align(value_label, LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_center(value_label);
 
-    g_value_widgets[slot] = widget;
-    g_value_arcs[slot] = arc;
-    g_title_labels[slot] = title_label;
-    g_value_labels[slot] = value_label;
+    *out_widget = widget;
+    *out_arc = arc;
+    *out_title = title_label;
+    *out_label = value_label;
+}
+
+static void create_column(lv_obj_t *parent, int x, uint8_t slot) {
+    create_column_ex(parent, x, &g_value_widgets[slot], &g_value_arcs[slot],
+                     &g_title_labels[slot], &g_value_labels[slot]);
 }
 
 static void create_level_dots(lv_obj_t *parent) {
@@ -1243,6 +1326,203 @@ static void close_sound_window(bool apply_changes) {
     g_last_render_time_us = micros();  // Reset throttle on major screen change
 }
 
+static char kb_key_char(uint8_t i) {
+    if (i < 26) return (char)((g_kb_lower ? 'a' : 'A') + i);
+    if (i < 36) return (char)('0' + (i - 26));
+    return ' ';
+}
+
+static void render_kb() {
+    if (!g_kb_screen) return;
+
+    char text[ALARM_NAME_MAX + 4];
+    std::snprintf(text, sizeof(text), "%s_", g_profile_edit.name);
+    lv_label_set_text(g_kb_text_label, text);
+
+    for (uint8_t i = 0; i < KB_KEY_COUNT; ++i) {
+        char label[4];
+        if (i == 36) std::snprintf(label, sizeof(label), "SP");
+        else if (i == 37) std::snprintf(label, sizeof(label), "DEL");
+        else if (i == 38) std::snprintf(label, sizeof(label), "%s", g_kb_lower ? "abc" : "ABC");
+        else std::snprintf(label, sizeof(label), "%c", kb_key_char(i));
+        lv_label_set_text(g_kb_key_labels[i], label);
+
+        const bool focused = (i == g_kb_focus);
+        lv_obj_set_style_bg_color(g_kb_keys[i],
+                                  focused ? lv_color_make(0x00, 0x88, 0x36) : lv_color_make(0x24, 0x24, 0x24),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_border_width(g_kb_keys[i], focused ? 2 : 1, LV_PART_MAIN);
+        lv_obj_set_style_border_color(g_kb_keys[i],
+                                      focused ? lv_color_white() : lv_color_make(0x50, 0x50, 0x50),
+                                      LV_PART_MAIN);
+    }
+}
+
+static void kb_press_focused_key() {
+    const size_t len = strlen(g_profile_edit.name);
+    if (g_kb_focus == 37) {
+        if (len > 0) g_profile_edit.name[len - 1] = '\0';
+    } else if (g_kb_focus == 38) {
+        g_kb_lower = !g_kb_lower;
+    } else if (len < ALARM_NAME_MAX) {
+        g_profile_edit.name[len] = kb_key_char(g_kb_focus);
+        g_profile_edit.name[len + 1] = '\0';
+    }
+    render_kb();
+}
+
+static void render_profile() {
+    if (!g_profile_screen) return;
+
+    static const char *titles[3] = {"\nName", "\nHour", "\nMinute"};
+    char value[ALARM_NAME_MAX + 4];
+
+    for (uint8_t i = 0; i < 3; ++i) {
+        lv_label_set_text(g_pf_titles[i], titles[i]);
+        lv_obj_set_hidden(g_pf_arcs[i], i == 0);
+        lv_obj_set_style_bg_color(g_pf_widgets[i], lv_color_make(0x16, 0x16, 0x16), LV_PART_MAIN);
+
+        if (i == 0) {
+            lv_obj_set_style_text_font(g_pf_labels[i], &lv_font_montserrat_16, 0);
+            lv_obj_set_style_text_color(g_pf_labels[i], lv_color_make(0x6D, 0xC4, 0xFF), 0);
+            lv_label_set_text(g_pf_labels[i], g_profile_edit.name);
+        } else {
+            const bool is_hour = (i == 1);
+            lv_arc_set_range(g_pf_arcs[i], 0, is_hour ? 12 : 59);
+            lv_arc_set_value(g_pf_arcs[i], is_hour ? (g_profile_edit.hour % 12) : g_profile_edit.minute);
+            std::snprintf(value, sizeof(value), "%02u",
+                          (unsigned)(is_hour ? g_profile_edit.hour : g_profile_edit.minute));
+            lv_obj_set_style_text_font(g_pf_labels[i], &lv_font_montserrat_20, 0);
+            lv_obj_set_style_text_color(g_pf_labels[i], lv_color_white(), 0);
+            lv_label_set_text(g_pf_labels[i], value);
+        }
+
+        if (i == g_profile_sel) lv_obj_add_state(g_pf_widgets[i], LV_STATE_FOCUSED);
+        else lv_obj_clear_state(g_pf_widgets[i], LV_STATE_FOCUSED);
+    }
+}
+
+static void build_profile_screen() {
+    g_profile_screen = lv_obj_create(nullptr);
+    lv_obj_set_size(g_profile_screen, DISP_W, DISP_H);
+    lv_obj_set_style_pad_all(g_profile_screen, 0, 0);
+    lv_obj_set_style_border_width(g_profile_screen, 0, 0);
+    lv_obj_set_scrollable(g_profile_screen, false);
+
+    apply_header_base(g_profile_screen, "Edit Alarm");
+
+    lv_obj_t *content = lv_obj_create(g_profile_screen);
+    lv_obj_set_size(content, DISP_W, CONTENT_H);
+    lv_obj_set_pos(content, 0, CONTENT_Y);
+    lv_obj_set_style_bg_color(content, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(content, 0, 0);
+    lv_obj_set_style_pad_all(content, 0, 0);
+    lv_obj_set_scrollable(content, false);
+
+    for (uint8_t i = 0; i < 3; ++i) {
+        create_column_ex(content, MAIN_COL_START_X + i * (COL_W + CONTENT_GAP_X),
+                         &g_pf_widgets[i], &g_pf_arcs[i], &g_pf_titles[i], &g_pf_labels[i]);
+        lv_label_set_long_mode(g_pf_labels[i], LV_LABEL_LONG_MODE_CLIP);
+    }
+}
+
+static void build_kb_screen() {
+    g_kb_screen = lv_obj_create(nullptr);
+    lv_obj_set_size(g_kb_screen, DISP_W, DISP_H);
+    lv_obj_set_style_pad_all(g_kb_screen, 0, 0);
+    lv_obj_set_style_border_width(g_kb_screen, 0, 0);
+    lv_obj_set_scrollable(g_kb_screen, false);
+
+    apply_header_base(g_kb_screen, "Alarm Name");
+
+    lv_obj_t *content = lv_obj_create(g_kb_screen);
+    lv_obj_set_size(content, DISP_W, CONTENT_H);
+    lv_obj_set_pos(content, 0, CONTENT_Y);
+    lv_obj_set_style_bg_color(content, lv_color_black(), 0);
+    lv_obj_set_style_bg_opa(content, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(content, 0, 0);
+    lv_obj_set_style_pad_all(content, 0, 0);
+    lv_obj_set_scrollable(content, false);
+
+    g_kb_text_label = lv_label_create(content);
+    lv_obj_set_width(g_kb_text_label, DISP_W);
+    lv_obj_set_style_text_font(g_kb_text_label, &lv_font_montserrat_20, 0);
+    lv_obj_set_style_text_color(g_kb_text_label, lv_color_white(), 0);
+    lv_obj_set_style_text_align(g_kb_text_label, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_pos(g_kb_text_label, 0, 0);
+
+    const int gap = 1;
+    const int key_w = (DISP_W - 8 - (gap * (KB_COLS - 1))) / KB_COLS;
+    const int key_h = 22;
+    const int top = 28;
+
+    for (uint8_t i = 0; i < KB_KEY_COUNT; ++i) {
+        lv_obj_t *key = lv_obj_create(content);
+        lv_obj_set_size(key, key_w, key_h);
+        lv_obj_set_pos(key, 4 + (i % KB_COLS) * (key_w + gap), top + (i / KB_COLS) * (key_h + gap));
+        lv_obj_set_style_radius(key, 4, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(key, 0, LV_PART_MAIN);
+        lv_obj_set_scrollable(key, false);
+
+        lv_obj_t *lbl = lv_label_create(key);
+        lv_obj_set_style_text_font(lbl, &lv_font_montserrat_14, 0);
+        lv_obj_set_style_text_color(lbl, lv_color_white(), 0);
+        lv_obj_center(lbl);
+
+        g_kb_keys[i] = key;
+        g_kb_key_labels[i] = lbl;
+    }
+}
+
+static void open_profile_window(uint8_t idx) {
+    stop_realtime_preview();
+    g_profile_idx = idx;
+    g_profile_sel = 0;
+    g_profile_edit = storage_manager_get().alarm_profiles[idx];
+    g_profile_open = true;
+    render_profile();
+    lv_screen_load(g_profile_screen);
+}
+
+static void close_profile_window(bool apply_changes) {
+    hide_header_flash();
+    if (apply_changes) {
+        AppSettings &s = storage_manager_get();
+        if (g_profile_edit.name[0] == '\0') {
+            std::snprintf(g_profile_edit.name, sizeof(g_profile_edit.name), "Alarm %u", (unsigned)(g_profile_idx + 1));
+        }
+        s.alarm_profiles[g_profile_idx] = g_profile_edit;
+        storage_manager_save_alarm();
+        if (s.active_profile == g_profile_idx + 1) {
+            alarm_manager_validate_and_arm();
+        }
+    }
+    g_profile_open = false;
+    lv_screen_load(g_screen);
+    render_fields();
+    g_last_render_time_us = micros();
+}
+
+static void open_kb_window() {
+    copy_str(g_kb_backup, sizeof(g_kb_backup), g_profile_edit.name);
+    g_kb_open = true;
+    g_kb_focus = 0;
+    g_kb_lower = false;
+    render_kb();
+    lv_screen_load(g_kb_screen);
+}
+
+static void close_kb_window(bool apply_changes) {
+    hide_header_flash();
+    if (!apply_changes) {
+        copy_str(g_profile_edit.name, sizeof(g_profile_edit.name), g_kb_backup);
+    }
+    g_kb_open = false;
+    render_profile();
+    lv_screen_load(g_profile_screen);
+}
+
 static void build_alarm_screen() {
     g_screen = lv_obj_create(nullptr);
     lv_obj_set_size(g_screen, DISP_W, DISP_H);
@@ -1279,6 +1559,8 @@ void ui_alarm_init() {
     build_alarm_screen();
     build_repeat_screen();
     build_sound_screen();
+    build_profile_screen();
+    build_kb_screen();
 }
 
 lv_obj_t *ui_alarm_get_screen() {
@@ -1308,6 +1590,8 @@ void ui_alarm_on_enter() {
     g_window_start = 0;
     g_repeat_open = false;
     g_sound_state.open = false;
+    g_profile_open = false;
+    g_kb_open = false;
     stop_realtime_preview();
     repeat_mask_normalize();
     audio_manager_stop_preview();
@@ -1320,6 +1604,65 @@ UiAlarmAction ui_alarm_handle_inputs(int32_t enc1_delta,
                                      int32_t enc2_delta,
                                      bool enc1_pressed,
                                      bool enc2_pressed) {
+    if (g_kb_open) {
+        if (g_modal_close_timer) {
+            return UiAlarmAction::NONE;
+        }
+        if (enc1_pressed) {
+            trigger_header_flash(false);
+            queue_modal_close_after_flash(ModalCloseAction::KB_CANCEL);
+            return UiAlarmAction::NONE;
+        }
+        if (enc2_pressed) {
+            trigger_header_flash(true);
+            queue_modal_close_after_flash(ModalCloseAction::KB_ACCEPT);
+            return UiAlarmAction::NONE;
+        }
+        if (enc1_delta != 0) {
+            int32_t next = ((int32_t)g_kb_focus + enc1_delta) % (int32_t)KB_KEY_COUNT;
+            if (next < 0) next += KB_KEY_COUNT;
+            g_kb_focus = (uint8_t)next;
+            render_kb();
+        }
+        if (enc2_delta != 0) {
+            kb_press_focused_key();
+        }
+        return UiAlarmAction::NONE;
+    }
+
+    if (g_profile_open) {
+        if (g_modal_close_timer) {
+            return UiAlarmAction::NONE;
+        }
+        if (enc1_pressed) {
+            trigger_header_flash(false);
+            queue_modal_close_after_flash(ModalCloseAction::PROFILE_CANCEL);
+            return UiAlarmAction::NONE;
+        }
+        if (enc2_pressed) {
+            trigger_header_flash(true);
+            queue_modal_close_after_flash(ModalCloseAction::PROFILE_ACCEPT);
+            return UiAlarmAction::NONE;
+        }
+        if (enc1_delta != 0) {
+            int32_t next = ((int32_t)g_profile_sel + enc1_delta) % 3;
+            if (next < 0) next += 3;
+            g_profile_sel = (uint8_t)next;
+        }
+        if (enc2_delta != 0) {
+            if (g_profile_sel == 0) {
+                open_kb_window();
+                return UiAlarmAction::NONE;
+            }
+            if (g_profile_sel == 1) g_profile_edit.hour = wrap_u8(g_profile_edit.hour, enc2_delta, 0, 23);
+            else g_profile_edit.minute = wrap_u8(g_profile_edit.minute, enc2_delta, 0, 59);
+        }
+        if (enc1_delta != 0 || enc2_delta != 0) {
+            render_profile();
+        }
+        return UiAlarmAction::NONE;
+    }
+
     if (g_repeat_open) {
         if (g_modal_close_timer) {
             return UiAlarmAction::NONE;
@@ -1463,6 +1806,10 @@ UiAlarmAction ui_alarm_handle_inputs(int32_t enc1_delta,
         }
         if (g_state.selected == AlarmField::SOUND) {
             open_sound_window();
+            return UiAlarmAction::NONE;
+        }
+        if (field_is_profile(selected_index())) {
+            open_profile_window((uint8_t)(selected_index() - (uint8_t)AlarmField::PROFILE1));
             return UiAlarmAction::NONE;
         }
         adjust_selected_field(enc2_delta);

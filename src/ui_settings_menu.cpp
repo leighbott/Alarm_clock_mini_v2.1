@@ -6,6 +6,7 @@
 #include "ui_quick_alarm_menu.h"
 #include "ui_home_page_menu.h"
 #include "ui_time_date.h"
+#include "manager_alarm.h"
 #include "manager_led.h"
 
 #include <lvgl.h>
@@ -537,6 +538,8 @@ void settings_menu_handle_inputs(int32_t enc1_delta,
                 route_to_led_color(LED_STRIP_BACK);
             } else if (action == UiOtherAction::ENTER_HOME_PAGE) {
                 route_to_home_page();
+            } else if (action == UiOtherAction::TEST_ALARM) {
+                alarm_manager_start_test();
             }
             return;
         }

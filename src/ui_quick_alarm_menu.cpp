@@ -1,5 +1,6 @@
 #include "ui_quick_alarm_menu.h"
 
+#include "manager_alarm.h"
 #include "manager_storage.h"
 
 #include <cstdio>
@@ -11,14 +12,19 @@ static constexpr int DISP_H = 142;
 static constexpr int HEADER_H = 34;
 static constexpr int CONTENT_Y = 36;
 static constexpr int CONTENT_H = DISP_H - CONTENT_Y;
-static constexpr uint8_t FIELD_COUNT = 3;
-static constexpr int CONTENT_PAD_X = 10;
-static constexpr int CONTENT_GAP_X = 10;
-static constexpr int COL_W = (DISP_W - (2 * CONTENT_PAD_X) - ((FIELD_COUNT - 1) * CONTENT_GAP_X)) / FIELD_COUNT;
+static constexpr uint8_t FIELD_COUNT = 6;
+static constexpr uint8_t VISIBLE_COLS = 4;
+static constexpr uint8_t LEVEL_COUNT = (FIELD_COUNT + VISIBLE_COLS - 1) / VISIBLE_COLS;
+static constexpr int PAGE_DOT_W = 16;
+static constexpr int CONTENT_PAD_X = 6;
+static constexpr int CONTENT_GAP_X = 4;
+static constexpr int MAIN_COL_START_X = CONTENT_PAD_X + PAGE_DOT_W;
+static constexpr int MAIN_COL_AVAILABLE_W = DISP_W - MAIN_COL_START_X - CONTENT_PAD_X;
+static constexpr int COL_W = (MAIN_COL_AVAILABLE_W - ((VISIBLE_COLS - 1) * CONTENT_GAP_X)) / VISIBLE_COLS;
 static constexpr int TITLE_H = 34;
-static constexpr int VALUE_W = 96;
+static constexpr int VALUE_W = 90;
 static constexpr int VALUE_H = 68;
-static constexpr int VALUE_Y = 32;
+static constexpr int VALUE_Y = 36;
 
 static lv_obj_t *g_screen = nullptr;
 static lv_obj_t *g_header_cancel_bg = nullptr;
@@ -28,12 +34,13 @@ static lv_timer_t *g_pending_action_timer = nullptr;
 static UiQuickAlarmAction g_pending_action = UiQuickAlarmAction::NONE;
 static UiQuickAlarmAction g_deferred_action = UiQuickAlarmAction::NONE;
 
-static lv_obj_t *g_value_widgets[FIELD_COUNT] = {nullptr};
-static lv_obj_t *g_title_labels[FIELD_COUNT] = {nullptr};
-static lv_obj_t *g_value_labels[FIELD_COUNT] = {nullptr};
-static lv_obj_t *g_arc_widgets[FIELD_COUNT] = {nullptr};
+static lv_obj_t *g_value_widgets[VISIBLE_COLS] = {nullptr};
+static lv_obj_t *g_title_labels[VISIBLE_COLS] = {nullptr};
+static lv_obj_t *g_value_labels[VISIBLE_COLS] = {nullptr};
+static lv_obj_t *g_arc_widgets[VISIBLE_COLS] = {nullptr};
+static lv_obj_t *g_level_dots[LEVEL_COUNT] = {nullptr};
 
-static UiQuickAlarmState g_state = {false, 7, 0, UiQuickAlarmField::ENABLED};
+static UiQuickAlarmState g_state = {false, 7, 0, 0, UiQuickAlarmField::ENABLED};
 
 static void hide_header_flash() {
     if (g_header_cancel_bg) lv_obj_set_style_bg_opa(g_header_cancel_bg, LV_OPA_TRANSP, 0);
@@ -85,12 +92,27 @@ static uint8_t wrap_u8(uint8_t value, int32_t delta, uint8_t min_v, uint8_t max_
 }
 
 static const char *field_title(uint8_t idx) {
-    static const char *titles[FIELD_COUNT] = {"Alarm", "Hour", "Minute"};
+    static const char *titles[FIELD_COUNT] = {"Alarm", "Alarm 1", "Alarm 2", "Alarm 3", "Hour", "Minute"};
     return titles[idx];
+}
+
+static bool field_is_profile(uint8_t idx) {
+    return idx >= (uint8_t)UiQuickAlarmField::PROFILE1 && idx <= (uint8_t)UiQuickAlarmField::PROFILE3;
 }
 
 static void adjust_selected_field(int32_t delta) {
     if (delta == 0) return;
+
+    const uint8_t sel = selected_index();
+    if (field_is_profile(sel)) {
+        const uint8_t profile = (uint8_t)(sel - (uint8_t)UiQuickAlarmField::PROFILE1 + 1);
+        if (delta > 0) {
+            g_state.active_profile = profile;
+        } else if (g_state.active_profile == profile) {
+            g_state.active_profile = 0;
+        }
+        return;
+    }
 
     switch (g_state.selected_field) {
         case UiQuickAlarmField::ENABLED:
@@ -98,57 +120,101 @@ static void adjust_selected_field(int32_t delta) {
             break;
         case UiQuickAlarmField::HOUR:
             g_state.hour = wrap_u8(g_state.hour, delta, 0, 23);
+            g_state.active_profile = 0;
             break;
         case UiQuickAlarmField::MINUTE:
             g_state.minute = wrap_u8(g_state.minute, delta, 0, 59);
+            g_state.active_profile = 0;
+            break;
+        default:
             break;
     }
+}
+
+static uint8_t window_start() {
+    return (uint8_t)((selected_index() / VISIBLE_COLS) * VISIBLE_COLS);
 }
 
 static void update_focus() {
     const uint8_t sel = selected_index();
-    for (uint8_t i = 0; i < FIELD_COUNT; ++i) {
+    const uint8_t start = window_start();
+    for (uint8_t i = 0; i < VISIBLE_COLS; ++i) {
         if (!g_value_widgets[i]) continue;
-        if (i == sel) lv_obj_add_state(g_value_widgets[i], LV_STATE_FOCUSED);
+        if ((uint8_t)(start + i) == sel) lv_obj_add_state(g_value_widgets[i], LV_STATE_FOCUSED);
         else lv_obj_clear_state(g_value_widgets[i], LV_STATE_FOCUSED);
+    }
+
+    for (uint8_t i = 0; i < LEVEL_COUNT; ++i) {
+        if (!g_level_dots[i]) continue;
+        lv_obj_set_style_bg_color(g_level_dots[i],
+                                  (i == start / VISIBLE_COLS) ? lv_color_white() : lv_color_make(0x42, 0x42, 0x42),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(g_level_dots[i], LV_OPA_COVER, LV_PART_MAIN);
     }
 }
 
 static void update_widgets() {
-    for (uint8_t idx = 0; idx < FIELD_COUNT; ++idx) {
-        if (!g_value_widgets[idx] || !g_title_labels[idx] || !g_value_labels[idx]) continue;
+    const AppSettings &settings = storage_manager_get();
+    const uint8_t start = window_start();
 
-        lv_label_set_text(g_title_labels[idx], field_title(idx));
+    for (uint8_t slot = 0; slot < VISIBLE_COLS; ++slot) {
+        const uint8_t idx = (uint8_t)(start + slot);
+        if (!g_value_widgets[slot] || !g_title_labels[slot] || !g_value_labels[slot] || !g_arc_widgets[slot]) continue;
 
-        char value[16];
+        if (idx >= FIELD_COUNT) {
+            lv_label_set_text(g_title_labels[slot], "");
+            lv_label_set_text(g_value_labels[slot], "");
+            lv_obj_set_hidden(g_arc_widgets[slot], true);
+            lv_obj_set_style_bg_opa(g_value_widgets[slot], LV_OPA_TRANSP, LV_PART_MAIN);
+            continue;
+        }
+
+        lv_obj_set_style_bg_opa(g_value_widgets[slot], LV_OPA_COVER, LV_PART_MAIN);
+        const char *title = field_title(idx);
+        char title_buf[16];
+        std::snprintf(title_buf, sizeof(title_buf), "\n%s", title);
+        lv_label_set_text(g_title_labels[slot], title_buf);
+
+        const bool is_arc = (idx == (uint8_t)UiQuickAlarmField::HOUR || idx == (uint8_t)UiQuickAlarmField::MINUTE);
+        lv_obj_set_hidden(g_arc_widgets[slot], !is_arc);
+        lv_obj_set_style_text_font(g_value_labels[slot], &lv_font_montserrat_20, 0);
+
+        char value[32];
+        lv_color_t shell = lv_color_make(0x16, 0x16, 0x16);
         switch ((UiQuickAlarmField)idx) {
             case UiQuickAlarmField::ENABLED:
                 std::snprintf(value, sizeof(value), "%s", g_state.enabled ? "ON" : "OFF");
-                lv_obj_set_style_bg_color(g_value_widgets[idx],
-                                          g_state.enabled ? lv_color_make(0x00, 0x9A, 0x3A)
-                                                           : lv_color_make(0xB0, 0x20, 0x20),
-                                          LV_PART_MAIN);
+                shell = g_state.enabled ? lv_color_make(0x00, 0x9A, 0x3A) : lv_color_make(0xB0, 0x20, 0x20);
                 break;
+            case UiQuickAlarmField::PROFILE1:
+            case UiQuickAlarmField::PROFILE2:
+            case UiQuickAlarmField::PROFILE3: {
+                const uint8_t p = (uint8_t)(idx - (uint8_t)UiQuickAlarmField::PROFILE1);
+                std::snprintf(value, sizeof(value), "%s\n%02u:%02u", settings.alarm_profiles[p].name,
+                              (unsigned)settings.alarm_profiles[p].hour,
+                              (unsigned)settings.alarm_profiles[p].minute);
+                lv_obj_set_style_text_font(g_value_labels[slot], &lv_font_montserrat_16, 0);
+                if (g_state.active_profile == p + 1) shell = lv_color_make(0x00, 0x9A, 0x3A);
+                break;
+            }
             case UiQuickAlarmField::HOUR:
                 std::snprintf(value, sizeof(value), "%02u", (unsigned)g_state.hour);
-                lv_obj_set_style_bg_color(g_value_widgets[idx], lv_color_make(0x16, 0x16, 0x16), LV_PART_MAIN);
-                if (g_arc_widgets[idx]) {
-                    lv_arc_set_rotation(g_arc_widgets[idx], 270);
-                    lv_arc_set_range(g_arc_widgets[idx], 0, 12);
-                    lv_arc_set_value(g_arc_widgets[idx], g_state.hour % 12);
-                }
+                lv_arc_set_rotation(g_arc_widgets[slot], 270);
+                lv_arc_set_range(g_arc_widgets[slot], 0, 12);
+                lv_arc_set_value(g_arc_widgets[slot], g_state.hour % 12);
                 break;
             case UiQuickAlarmField::MINUTE:
                 std::snprintf(value, sizeof(value), "%02u", (unsigned)g_state.minute);
-                lv_obj_set_style_bg_color(g_value_widgets[idx], lv_color_make(0x16, 0x16, 0x16), LV_PART_MAIN);
-                if (g_arc_widgets[idx]) {
-                    lv_arc_set_rotation(g_arc_widgets[idx], 270);
-                    lv_arc_set_range(g_arc_widgets[idx], 0, 59);
-                    lv_arc_set_value(g_arc_widgets[idx], g_state.minute);
-                }
+                lv_arc_set_rotation(g_arc_widgets[slot], 270);
+                lv_arc_set_range(g_arc_widgets[slot], 0, 59);
+                lv_arc_set_value(g_arc_widgets[slot], g_state.minute);
+                break;
+            default:
+                value[0] = '\0';
                 break;
         }
-        lv_label_set_text(g_value_labels[idx], value);
+        lv_obj_set_style_bg_color(g_value_widgets[slot], shell, LV_PART_MAIN);
+        lv_label_set_text(g_value_labels[slot], value);
     }
 
     update_focus();
@@ -159,7 +225,9 @@ static void save_state_to_storage() {
     settings.alarm_enabled = g_state.enabled;
     settings.alarm_hour = g_state.hour;
     settings.alarm_minute = g_state.minute;
+    settings.active_profile = g_state.active_profile;
     storage_manager_save_alarm();
+    alarm_manager_validate_and_arm();
 }
 
 static void apply_header_base(lv_obj_t *screen, const char *title) {
@@ -262,7 +330,7 @@ static void create_column(lv_obj_t *parent, int x, uint8_t slot) {
     lv_obj_set_style_outline_color(widget, lv_color_white(), LV_PART_MAIN | LV_STATE_FOCUSED);
     lv_obj_set_style_outline_opa(widget, LV_OPA_70, LV_PART_MAIN | LV_STATE_FOCUSED);
 
-    if (slot == (uint8_t)UiQuickAlarmField::HOUR || slot == (uint8_t)UiQuickAlarmField::MINUTE) {
+    {
         lv_obj_t *arc = lv_arc_create(widget);
         lv_obj_set_size(arc, 58, 58);
         lv_obj_center(arc);
@@ -292,6 +360,24 @@ static void create_column(lv_obj_t *parent, int x, uint8_t slot) {
     g_value_labels[slot] = value_label;
 }
 
+static void create_level_dots(lv_obj_t *parent) {
+    const int dot_h = 8;
+    const int gap = 12;
+    const int total_h = (LEVEL_COUNT * dot_h) + ((LEVEL_COUNT - 1) * gap);
+    const int start_y = (CONTENT_H - total_h) / 2;
+
+    for (uint8_t i = 0; i < LEVEL_COUNT; ++i) {
+        lv_obj_t *dot = lv_obj_create(parent);
+        lv_obj_set_size(dot, 8, 8);
+        lv_obj_set_pos(dot, 6, start_y + i * (dot_h + gap));
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(dot, 0, LV_PART_MAIN);
+        lv_obj_set_scrollable(dot, false);
+        g_level_dots[i] = dot;
+    }
+}
+
 } // namespace
 
 void ui_quick_alarm_init() {
@@ -314,8 +400,10 @@ void ui_quick_alarm_init() {
     lv_obj_set_style_pad_all(content, 0, 0);
     lv_obj_set_scrollable(content, false);
 
-    for (uint8_t i = 0; i < FIELD_COUNT; ++i) {
-        const int x = CONTENT_PAD_X + i * (COL_W + CONTENT_GAP_X);
+    create_level_dots(content);
+
+    for (uint8_t i = 0; i < VISIBLE_COLS; ++i) {
+        const int x = MAIN_COL_START_X + i * (COL_W + CONTENT_GAP_X);
         create_column(content, x, i);
     }
 
@@ -331,6 +419,7 @@ void ui_quick_alarm_on_enter() {
     g_state.enabled = settings.alarm_enabled;
     g_state.hour = settings.alarm_hour;
     g_state.minute = settings.alarm_minute;
+    g_state.active_profile = settings.active_profile;
     g_state.selected_field = UiQuickAlarmField::ENABLED;
     update_widgets();
 }

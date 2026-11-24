@@ -9,6 +9,7 @@ enum class UiOtherAction {
     ENTER_LED1,
     ENTER_LED2,
     ENTER_HOME_PAGE,
+    TEST_ALARM,
 };
 
 void ui_other_init();

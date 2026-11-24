@@ -19,6 +19,13 @@ void alarm_manager_check_trigger();
 // Call every loop; handles ramping, active-window updates, and input actions.
 void alarm_manager_update(bool enc1_held, bool enc2_held);
 
+// Call after the user changes alarm settings. If the next alarm would start its
+// ramp immediately, plays a short rejection beep and skips that occurrence.
+void alarm_manager_validate_and_arm();
+
+// Plays the alarm immediately with current settings; does not alter schedules.
+void alarm_manager_start_test();
+
 AlarmState alarm_manager_get_state();
 bool alarm_manager_is_alarm_active();
 bool alarm_manager_is_alarm_screen_visible();

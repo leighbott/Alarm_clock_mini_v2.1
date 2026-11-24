@@ -13,14 +13,14 @@ static constexpr int DISP_H = 142;
 static constexpr int HEADER_H = 34;
 static constexpr int CONTENT_Y = 36;
 static constexpr int CONTENT_H = DISP_H - CONTENT_Y;
-static constexpr int TILE_COUNT = 4;
+static constexpr int TILE_COUNT = 5;
 static constexpr int PAGE_DOT_W = 16;
 static constexpr int CONTENT_PAD_X = 6;
 static constexpr int CONTENT_GAP_X = 4;
 static constexpr int MAIN_COL_START_X = CONTENT_PAD_X + PAGE_DOT_W;
 static constexpr int MAIN_COL_AVAILABLE_W = DISP_W - MAIN_COL_START_X - CONTENT_PAD_X;
 static constexpr int COL_W = (MAIN_COL_AVAILABLE_W - ((TILE_COUNT - 1) * CONTENT_GAP_X)) / TILE_COUNT;
-static constexpr int VALUE_W = 90;
+static constexpr int VALUE_W = 72;
 static constexpr int VALUE_H = 68;
 static constexpr int VALUE_Y = 36;
 static constexpr int SWATCH_SIZE = 28;
@@ -37,9 +37,9 @@ static lv_timer_t *g_pending_action_timer = nullptr;
 static UiOtherAction g_pending_action = UiOtherAction::NONE;
 static UiOtherAction g_deferred_action = UiOtherAction::NONE;
 
-static lv_obj_t *g_tiles[TILE_COUNT] = {nullptr, nullptr, nullptr, nullptr};
+static lv_obj_t *g_tiles[TILE_COUNT] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 static lv_obj_t *g_swatches[2] = {nullptr, nullptr};
-static lv_obj_t *g_value_labels[TILE_COUNT] = {nullptr, nullptr, nullptr, nullptr};
+static lv_obj_t *g_value_labels[TILE_COUNT] = {nullptr, nullptr, nullptr, nullptr, nullptr};
 static uint8_t g_selected_tile = 0;
 
 // Baseline captured when the Other menu is entered, restored on CANCEL.
@@ -286,6 +286,8 @@ void ui_other_init() {
                        2, "Home Page", "Select");
     create_value_column(content, MAIN_COL_START_X + 3 * (COL_W + CONTENT_GAP_X),
                        3, "Auto LED Off", "");
+    create_value_column(content, MAIN_COL_START_X + 4 * (COL_W + CONTENT_GAP_X),
+                       4, "Test Alarm", "Start");
     update_auto_off_value();
 
     g_selected_tile = 0;
@@ -399,6 +401,7 @@ UiOtherAction ui_other_handle_inputs(int32_t enc1_delta,
             case 0: return UiOtherAction::ENTER_LED1;
             case 1: return UiOtherAction::ENTER_LED2;
             case 2: return UiOtherAction::ENTER_HOME_PAGE;
+            case 4: return UiOtherAction::TEST_ALARM;
             default: return UiOtherAction::NONE;
         }
     }

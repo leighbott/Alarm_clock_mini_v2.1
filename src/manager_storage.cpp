@@ -14,6 +14,19 @@ static void load_alarm() {
     settings.alarm_enabled       = prefs.getBool  ("alm_en",       settings.alarm_enabled);
     settings.alarm_hour          = prefs.getUChar  ("alm_hr",       settings.alarm_hour);
     settings.alarm_minute        = prefs.getUChar  ("alm_min",      settings.alarm_minute);
+    settings.active_profile      = prefs.getUChar  ("alm_prof",     settings.active_profile);
+    if (settings.active_profile > ALARM_PROFILE_COUNT) settings.active_profile = 0;
+    for (uint8_t i = 0; i < ALARM_PROFILE_COUNT; ++i) {
+        char k[12];
+        snprintf(k, sizeof(k), "ap%u_nm", i);
+        String nm = prefs.getString(k, settings.alarm_profiles[i].name);
+        strncpy(settings.alarm_profiles[i].name, nm.c_str(), ALARM_NAME_MAX);
+        settings.alarm_profiles[i].name[ALARM_NAME_MAX] = '\0';
+        snprintf(k, sizeof(k), "ap%u_hr", i);
+        settings.alarm_profiles[i].hour = prefs.getUChar(k, settings.alarm_profiles[i].hour) % 24;
+        snprintf(k, sizeof(k), "ap%u_mn", i);
+        settings.alarm_profiles[i].minute = prefs.getUChar(k, settings.alarm_profiles[i].minute) % 60;
+    }
     settings.alarm_volume        = prefs.getUChar  ("alm_vol",      settings.alarm_volume);
     settings.alarm_end_brightness= prefs.getUChar  ("alm_end_brt",  settings.alarm_end_brightness);
     settings.alarm_vol_ramp_min  = prefs.getUShort ("alm_vol_ramp", settings.alarm_vol_ramp_min);
@@ -41,6 +54,16 @@ static void save_alarm() {
     prefs.putBool  ("alm_en",       settings.alarm_enabled);
     prefs.putUChar ("alm_hr",       settings.alarm_hour);
     prefs.putUChar ("alm_min",      settings.alarm_minute);
+    prefs.putUChar ("alm_prof",     settings.active_profile);
+    for (uint8_t i = 0; i < ALARM_PROFILE_COUNT; ++i) {
+        char k[12];
+        snprintf(k, sizeof(k), "ap%u_nm", i);
+        prefs.putString(k, settings.alarm_profiles[i].name);
+        snprintf(k, sizeof(k), "ap%u_hr", i);
+        prefs.putUChar(k, settings.alarm_profiles[i].hour);
+        snprintf(k, sizeof(k), "ap%u_mn", i);
+        prefs.putUChar(k, settings.alarm_profiles[i].minute);
+    }
     prefs.putUChar ("alm_vol",      settings.alarm_volume);
     prefs.putUChar ("alm_end_brt",  settings.alarm_end_brightness);
     prefs.putUShort("alm_vol_ramp", settings.alarm_vol_ramp_min);
@@ -154,6 +177,12 @@ void storage_manager_init() {
     settings.alarm_enabled        = false;
     settings.alarm_hour           = 7;
     settings.alarm_minute         = 0;
+    settings.active_profile       = 0;
+    for (uint8_t i = 0; i < ALARM_PROFILE_COUNT; ++i) {
+        snprintf(settings.alarm_profiles[i].name, sizeof(settings.alarm_profiles[i].name), "Alarm %u", i + 1);
+        settings.alarm_profiles[i].hour = 7;
+        settings.alarm_profiles[i].minute = 0;
+    }
     strncpy(settings.alarm_mp3, "/test.mp3", sizeof(settings.alarm_mp3) - 1);
     settings.alarm_mp3[sizeof(settings.alarm_mp3) - 1] = '\0';
     settings.alarm_volume         = 80;

@@ -14,12 +14,23 @@ struct UiElementConfig {
     uint16_t color_rgb565; // packed RGB565; 0xFFFF sentinel = use built-in default color
 };
 
+static constexpr uint8_t ALARM_PROFILE_COUNT = 3;
+static constexpr uint8_t ALARM_NAME_MAX = 10;
+
+struct AlarmProfile {
+    char    name[ALARM_NAME_MAX + 1];
+    uint8_t hour;
+    uint8_t minute;
+};
+
 // ── All persistent settings ───────────────────────────────────────────────────
 struct AppSettings {
     // Alarm
     bool     alarm_enabled;
     uint8_t  alarm_hour;
     uint8_t  alarm_minute;
+    AlarmProfile alarm_profiles[ALARM_PROFILE_COUNT]; // saved profiles 1..3
+    uint8_t  active_profile;         // 0 = ad hoc (alarm_hour/minute), 1..3 = alarm_profiles[n-1]
     char     alarm_mp3[64];          // path on SD, e.g. "/alarm.mp3"
     uint8_t  alarm_volume;           // 0–100 %
     uint8_t  alarm_end_brightness;   // LED brightness at end of sunrise, 0–255

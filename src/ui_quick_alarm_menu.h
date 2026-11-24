@@ -11,6 +11,9 @@ enum class UiQuickAlarmAction {
 
 enum class UiQuickAlarmField : uint8_t {
     ENABLED = 0,
+    PROFILE1,
+    PROFILE2,
+    PROFILE3,
     HOUR,
     MINUTE,
 };
@@ -19,6 +22,7 @@ struct UiQuickAlarmState {
     bool enabled;
     uint8_t hour;
     uint8_t minute;
+    uint8_t active_profile; // 0 = ad hoc, 1..3 = saved alarm profile
     UiQuickAlarmField selected_field;
 };
 

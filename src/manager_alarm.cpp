@@ -31,6 +31,10 @@ static uint32_t g_active_start_ms = 0;
 static uint32_t g_auto_loud_start_ms = 0;
 static bool g_auto_loud_triggered = false;
 static uint32_t g_last_match_stamp = 0;
+static uint32_t g_skip_stamp = 0;
+static bool g_is_test = false;
+static uint32_t g_beep_stop_ms = 0;
+static constexpr uint32_t REJECT_BEEP_MS = 500U;
 static uint32_t g_snooze_until_epoch = 0;
 static constexpr uint32_t TAP_SNOOZE_MS = 300U;
 static uint32_t g_alarm_target_epoch = 0;
@@ -130,13 +134,30 @@ static void set_back_output(bool enabled, uint8_t value) {
     led_manager_set_back(value);
 }
 
+static void active_alarm_time(const AppSettings &s, uint8_t *hour, uint8_t *minute) {
+    if (s.active_profile >= 1 && s.active_profile <= ALARM_PROFILE_COUNT) {
+        *hour = s.alarm_profiles[s.active_profile - 1].hour;
+        *minute = s.alarm_profiles[s.active_profile - 1].minute;
+    } else {
+        *hour = s.alarm_hour;
+        *minute = s.alarm_minute;
+    }
+}
+
+static uint16_t flow_lead_min(const AppSettings &s) {
+    return clamp_u16((s.alarm_vol_ramp_min > s.alarm_sun_ramp_min) ? s.alarm_vol_ramp_min : s.alarm_sun_ramp_min, 0, 30);
+}
+
 static bool compute_next_scheduled_alarm_epoch(const AppSettings &s, const DateTime &now, uint32_t *out_epoch) {
     if (!s.alarm_enabled || !out_epoch) {
         return false;
     }
 
     const uint32_t now_minute = epoch_minutes(now);
-    const DateTime today_alarm(now.year(), now.month(), now.day(), s.alarm_hour, s.alarm_minute, 0);
+    uint8_t alarm_hour = 0;
+    uint8_t alarm_minute = 0;
+    active_alarm_time(s, &alarm_hour, &alarm_minute);
+    const DateTime today_alarm(now.year(), now.month(), now.day(), alarm_hour, alarm_minute, 0);
 
     if (s.repeat_mode & 0x80U) {
         uint32_t candidate = today_alarm.unixtime();
@@ -216,6 +237,7 @@ static void stop_alarm(bool return_home, bool leave_back_at_end) {
 
     const AppSettings &s = storage_manager_get();
     g_state = s.alarm_enabled ? AlarmState::ARMED : AlarmState::IDLE;
+    g_is_test = false;
     g_alarm_target_epoch = 0;
     g_flow_vol_ramp_min = 0;
     g_flow_sun_ramp_min = 0;
@@ -363,14 +385,11 @@ void alarm_manager_check_trigger() {
     }
 
     const uint32_t alarm_stamp = alarm_epoch / 60U;
-    if (g_last_match_stamp == alarm_stamp) {
+    if (g_last_match_stamp == alarm_stamp || g_skip_stamp == alarm_stamp) {
         return;
     }
 
-    const uint16_t lead_min = clamp_u16(
-        (s.alarm_vol_ramp_min > s.alarm_sun_ramp_min) ? s.alarm_vol_ramp_min : s.alarm_sun_ramp_min,
-        0,
-        30);
+    const uint16_t lead_min = flow_lead_min(s);
     const uint32_t flow_start_epoch = alarm_epoch - ((uint32_t)lead_min * 60U);
 
     if (now.unixtime() < flow_start_epoch) {
@@ -384,6 +403,13 @@ void alarm_manager_check_trigger() {
 
 void alarm_manager_update(bool enc1_held, bool enc2_held) {
     const AppSettings &s = storage_manager_get();
+
+    if (g_beep_stop_ms != 0 && (int32_t)(millis() - g_beep_stop_ms) >= 0) {
+        g_beep_stop_ms = 0;
+        if (g_state != AlarmState::RAMP_UP && g_state != AlarmState::ACTIVE) {
+            audio_manager_stop();
+        }
+    }
 
     if (g_state == AlarmState::IDLE || g_state == AlarmState::ARMED || g_state == AlarmState::SNOOZING) {
         return;
@@ -471,7 +497,7 @@ void alarm_manager_update(bool enc1_held, bool enc2_held) {
 
         if (!g_hold_dismiss_latched && held_ms >= hold_target_ms) {
             g_hold_dismiss_latched = true;
-            stop_alarm(true, true);
+            stop_alarm(true, !g_is_test);
             return;
         }
     }
@@ -482,7 +508,7 @@ void alarm_manager_update(bool enc1_held, bool enc2_held) {
         ui_alarm_active_window_set_hold_progress(0.0f);
 
         // Quick release snoozes; longer-than-tap hold releases just reset the progress ring.
-        if (!g_hold_dismiss_latched && s.snooze_enabled && held_ms < TAP_SNOOZE_MS) {
+        if (!g_hold_dismiss_latched && !g_is_test && s.snooze_enabled && held_ms < TAP_SNOOZE_MS) {
             audio_manager_stop();
             restore_pre_alarm_outputs();
             g_state = AlarmState::SNOOZING;
@@ -537,4 +563,39 @@ bool alarm_manager_get_next_alarm_time(const DateTime &now, DateTime *out_time, 
         *out_time = DateTime(next_epoch);
     }
     return true;
+}
+
+void alarm_manager_validate_and_arm() {
+    const AppSettings &s = storage_manager_get();
+    g_last_match_stamp = 0;
+    if (g_state == AlarmState::RAMP_UP || g_state == AlarmState::ACTIVE || g_state == AlarmState::SNOOZING) {
+        return;
+    }
+
+    const DateTime now = rtc_manager_get_time();
+    uint32_t alarm_epoch = 0;
+    if (!compute_next_scheduled_alarm_epoch(s, now, &alarm_epoch)) {
+        return;
+    }
+
+    const uint32_t flow_start_epoch = alarm_epoch - ((uint32_t)flow_lead_min(s) * 60U);
+    if (now.unixtime() < flow_start_epoch) {
+        g_skip_stamp = 0;
+        return;
+    }
+
+    g_skip_stamp = alarm_epoch / 60U;
+    audio_manager_play("/beeps/700hz.mp3");
+    g_beep_stop_ms = millis() + REJECT_BEEP_MS;
+    if (g_beep_stop_ms == 0) {
+        g_beep_stop_ms = 1;
+    }
+}
+
+void alarm_manager_start_test() {
+    if (g_state != AlarmState::IDLE && g_state != AlarmState::ARMED) {
+        return;
+    }
+    g_is_test = true;
+    start_alarm_flow(rtc_manager_get_time().unixtime(), true);
 }
