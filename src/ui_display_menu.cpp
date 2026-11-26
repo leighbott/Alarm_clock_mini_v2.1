@@ -13,7 +13,7 @@ static constexpr int HEADER_H = 34;
 static constexpr int CONTENT_Y = 36;
 static constexpr int CONTENT_H = DISP_H - CONTENT_Y;
 static constexpr uint8_t FIELD_COUNT = 6;
-static constexpr uint8_t VISIBLE_COLS = 4;
+static constexpr uint8_t VISIBLE_COLS = 5;
 static constexpr uint8_t LEVEL_COUNT = (FIELD_COUNT + VISIBLE_COLS - 1) / VISIBLE_COLS;
 static constexpr int PAGE_DOT_W = 16;
 static constexpr int CONTENT_PAD_X = 6;
@@ -22,9 +22,9 @@ static constexpr int MAIN_COL_START_X = CONTENT_PAD_X + PAGE_DOT_W;
 static constexpr int MAIN_COL_AVAILABLE_W = DISP_W - MAIN_COL_START_X - CONTENT_PAD_X;
 static constexpr int COL_W = (MAIN_COL_AVAILABLE_W - ((VISIBLE_COLS - 1) * CONTENT_GAP_X)) / VISIBLE_COLS;
 static constexpr int TITLE_H = 34;
-static constexpr int VALUE_W = 84;
-static constexpr int VALUE_H = 70;
-static constexpr int VALUE_Y = 32;
+static constexpr int VALUE_W = 75;
+static constexpr int VALUE_H = 68;
+static constexpr int VALUE_Y = 36;
 
 static constexpr uint32_t PREVIEW_TIMEOUT_MS = 2000;
 
@@ -92,7 +92,7 @@ static uint8_t selected_index() {
 }
 
 static constexpr uint8_t MANUAL_MIN_PERCENT = 0;
-static constexpr uint8_t BOOST_MIN_PERCENT = 5;
+static constexpr uint8_t BOOST_MIN_PERCENT = 1;
 
 static uint8_t raw_to_percent(uint8_t raw_value) {
     if (raw_value == 0) return 0;
@@ -309,15 +309,25 @@ static void adjust_selected_field(int32_t delta) {
 
         case UiDisplayField::MANUAL_BRIGHTNESS:
             if (delta > 0) {
-                uint16_t next = (uint16_t)g_state.manual_brightness_percent + (uint16_t)(magnitude * 5U);
-                g_state.manual_brightness_percent = (next > 100) ? 100 : (uint8_t)next;
+                if (g_state.manual_brightness_percent < 1) {
+                    g_state.manual_brightness_percent = 1;
+                } else {
+                    uint16_t next = (uint16_t)g_state.manual_brightness_percent + (uint16_t)(magnitude * 5U);
+                    g_state.manual_brightness_percent = (next > 100) ? 100 : (uint8_t)next;
+                }
             } else {
-                int16_t next = (int16_t)g_state.manual_brightness_percent - (int16_t)(magnitude * 5U);
-                g_state.manual_brightness_percent = (next < MANUAL_MIN_PERCENT) ? MANUAL_MIN_PERCENT : (uint8_t)next;
+                if (g_state.manual_brightness_percent > 1 && g_state.manual_brightness_percent <= 5) {
+                    g_state.manual_brightness_percent = 1;
+                } else if (g_state.manual_brightness_percent == 1) {
+                    g_state.manual_brightness_percent = 0;
+                } else {
+                    int16_t next = (int16_t)g_state.manual_brightness_percent - (int16_t)(magnitude * 5U);
+                    g_state.manual_brightness_percent = (next < MANUAL_MIN_PERCENT) ? MANUAL_MIN_PERCENT : (uint8_t)next;
+                }
             }
-            g_state.manual_brightness_percent = (uint8_t)((g_state.manual_brightness_percent / 5U) * 5U);
-            if (g_state.manual_brightness_percent < MANUAL_MIN_PERCENT) {
-                g_state.manual_brightness_percent = MANUAL_MIN_PERCENT;
+            if (g_state.manual_brightness_percent > 1) {
+                g_state.manual_brightness_percent = (uint8_t)((g_state.manual_brightness_percent / 5U) * 5U);
+                if (g_state.manual_brightness_percent < 5) g_state.manual_brightness_percent = 5;
             }
             apply_manual_display_preview();
             break;
@@ -331,15 +341,26 @@ static void adjust_selected_field(int32_t delta) {
                                             ? BOOST_MIN_PERCENT
                                             : g_state.manual_brightness_percent;
             if (delta > 0) {
-                uint16_t next = (uint16_t)g_state.boost_brightness_percent + (uint16_t)(magnitude * 5U);
-                g_state.boost_brightness_percent = (next > 100) ? 100 : (uint8_t)next;
+                if (g_state.boost_brightness_percent < boost_floor) {
+                    g_state.boost_brightness_percent = boost_floor;
+                } else {
+                    uint16_t next = (uint16_t)g_state.boost_brightness_percent + (uint16_t)(magnitude * 5U);
+                    g_state.boost_brightness_percent = (next > 100) ? 100 : (uint8_t)next;
+                }
             } else {
-                int16_t next = (int16_t)g_state.boost_brightness_percent - (int16_t)(magnitude * 5U);
-                g_state.boost_brightness_percent = (next < boost_floor) ? boost_floor : (uint8_t)next;
+                if (g_state.boost_brightness_percent > boost_floor &&
+                    g_state.boost_brightness_percent <= (uint8_t)(boost_floor + 4)) {
+                    g_state.boost_brightness_percent = boost_floor;
+                } else {
+                    int16_t next = (int16_t)g_state.boost_brightness_percent - (int16_t)(magnitude * 5U);
+                    g_state.boost_brightness_percent = (next < boost_floor) ? boost_floor : (uint8_t)next;
+                }
             }
-            g_state.boost_brightness_percent = (uint8_t)((g_state.boost_brightness_percent / 5U) * 5U);
-            if (g_state.boost_brightness_percent < boost_floor) {
-                g_state.boost_brightness_percent = boost_floor;
+            if (g_state.boost_brightness_percent > boost_floor) {
+                g_state.boost_brightness_percent = (uint8_t)((g_state.boost_brightness_percent / 5U) * 5U);
+                if (g_state.boost_brightness_percent < boost_floor) {
+                    g_state.boost_brightness_percent = boost_floor;
+                }
             }
             break;
         }

@@ -30,7 +30,7 @@ static uint8_t fade_back_start = 0;
 static bool fade_active = false;
 static bool auto_off_expired = false;
 
-static constexpr uint32_t LED_FADE_DURATION_MS = 1000U;
+static constexpr uint32_t LED_FADE_DURATION_MS = 500U;
 
 static uint8_t gamma_correct(uint8_t brightness) {
     if (brightness == 0) return 0;
@@ -126,12 +126,14 @@ void led_manager_note_user_input() {
 }
 
 void led_manager_update() {
-    const uint16_t timeout_min = storage_manager_get().auto_led_off_min;
-    if (timeout_min == 0 || auto_off_expired) return;
+    const uint16_t timeout_setting = storage_manager_get().auto_led_off_min;
+    if (timeout_setting == 0 || auto_off_expired) return;
 
     const uint32_t now = millis();
     if (!fade_active) {
-        const uint32_t timeout_ms = (uint32_t)timeout_min * 60U * 1000U;
+        const uint32_t timeout_ms = (timeout_setting == 1)
+                                        ? 10000U
+                                        : ((uint32_t)timeout_setting * 60U * 1000U);
         if ((uint32_t)(now - last_user_input_ms) < timeout_ms) return;
         if (!front_on && !back_on) {
             auto_off_expired = true;

@@ -130,8 +130,12 @@ static const char *month_name(uint8_t m) {
     return (m >= 1 && m <= 12) ? months[m] : "---";
 }
 
-static bool is_same_calendar_day(const DateTime &a, const DateTime &b) {
-    return a.year() == b.year() && a.month() == b.month() && a.day() == b.day();
+static void format_alarm_time_12h(uint8_t hour24, uint8_t minute, char *out, size_t out_len) {
+    if (!out || out_len == 0) return;
+    uint8_t h12 = hour24 % 12;
+    if (h12 == 0) h12 = 12;
+    const char *suffix = (hour24 >= 12) ? "pm" : "am";
+    snprintf(out, out_len, "%u:%02u %s", (unsigned)h12, (unsigned)minute, suffix);
 }
 
 static void reposition_dow_anchor() {
@@ -309,9 +313,10 @@ void ui_main_screen_update() {
 
         // ── Alarm & time-until ────────────────────────────────────────────────
         DateTime next_alarm;
-        bool is_snoozed = false;
-        if (alarm_manager_get_next_alarm_time(now, &next_alarm, &is_snoozed)) {
-            snprintf(buf, sizeof(buf), "Alarm %02d:%02d", next_alarm.hour(), next_alarm.minute());
+        if (alarm_manager_get_next_alarm_time(now, &next_alarm, nullptr)) {
+            char alarm_time[16];
+            format_alarm_time_12h(next_alarm.hour(), next_alarm.minute(), alarm_time, sizeof(alarm_time));
+            snprintf(buf, sizeof(buf), "Alarm %s", alarm_time);
             lv_label_set_text(lbl_alarm, buf);
             if (!g_alarm_color_customized) lv_obj_set_style_text_color(lbl_alarm, COL_ACCENT, 0);
 
@@ -319,25 +324,20 @@ void ui_main_screen_update() {
             if (next_alarm.unixtime() > now.unixtime()) {
                 diff_seconds = next_alarm.unixtime() - now.unixtime();
             }
-            if (diff_seconds < (60U * 60U)) {
-                uint32_t minutes = (diff_seconds + 59U) / 60U;
-                if (minutes == 0) minutes = 1;
-                if (minutes == 1U) snprintf(buf, sizeof(buf), "in 1 minute");
-                else snprintf(buf, sizeof(buf), "in %lu minutes", (unsigned long)minutes);
-            } else if (diff_seconds < (12U * 60U * 60U)) {
-                uint32_t hours = diff_seconds / (60U * 60U);
-                if (hours == 1U) snprintf(buf, sizeof(buf), "1 hour");
-                else snprintf(buf, sizeof(buf), "%lu hours", (unsigned long)hours);
-            } else if (diff_seconds <= (24U * 60U * 60U)) {
-                snprintf(buf, sizeof(buf), "Tomorrow");
-            } else if (!is_snoozed && !is_same_calendar_day(now, next_alarm)) {
-                snprintf(buf, sizeof(buf), "on %s", day_name(next_alarm.dayOfTheWeek()));
-            } else {
-                const uint32_t diff_minutes = (diff_seconds + 59U) / 60U;
+            if (diff_seconds < (12U * 60U * 60U)) {
+                uint32_t diff_minutes = (diff_seconds + 59U) / 60U;
+                if (diff_minutes == 0U) diff_minutes = 1U;
                 const uint32_t h = diff_minutes / 60U;
                 const uint32_t m = diff_minutes % 60U;
-                if (h > 0U) snprintf(buf, sizeof(buf), "in %luh %lum", (unsigned long)h, (unsigned long)m);
-                else        snprintf(buf, sizeof(buf), "in %lum",       (unsigned long)m);
+                if (h > 0U) {
+                    snprintf(buf, sizeof(buf), "in %luh, %lum", (unsigned long)h, (unsigned long)m);
+                } else {
+                    snprintf(buf, sizeof(buf), "in %lum", (unsigned long)m);
+                }
+            } else if (diff_seconds < (24U * 60U * 60U)) {
+                snprintf(buf, sizeof(buf), "Tomorrow");
+            } else {
+                snprintf(buf, sizeof(buf), "on %s", day_name(next_alarm.dayOfTheWeek()));
             }
             lv_label_set_text(lbl_until, buf);
         } else {

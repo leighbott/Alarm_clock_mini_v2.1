@@ -42,6 +42,7 @@ static uint16_t g_flow_vol_ramp_min = 0;
 static uint16_t g_flow_sun_ramp_min = 0;
 static uint8_t g_flow_end_volume = 0;
 static uint8_t g_flow_end_led = 0;
+static bool g_flow_immediate_ramp_start = false;
 static bool g_audio_started = false;
 static bool g_outputs_paused_for_hold = false;
 static char g_alarm_path[64] = "/test.mp3";
@@ -243,6 +244,7 @@ static void stop_alarm(bool return_home, bool leave_back_at_end) {
     g_flow_sun_ramp_min = 0;
     g_flow_end_volume = 0;
     g_flow_end_led = 0;
+    g_flow_immediate_ramp_start = false;
     g_audio_started = false;
     g_auto_loud_triggered = false;
     g_auto_loud_start_ms = 0;
@@ -256,7 +258,7 @@ static void stop_alarm(bool return_home, bool leave_back_at_end) {
     }
 }
 
-static void start_alarm_flow(uint32_t target_epoch, bool skip_ramp) {
+static void start_alarm_flow(uint32_t target_epoch, bool skip_ramp, bool immediate_ramp_start) {
     const AppSettings &s = storage_manager_get();
 
     capture_pre_alarm_outputs();
@@ -273,6 +275,7 @@ static void start_alarm_flow(uint32_t target_epoch, bool skip_ramp) {
     g_flow_sun_ramp_min = skip_ramp ? 0 : clamp_u16(s.alarm_sun_ramp_min, 0, 30);
     g_flow_end_volume = clamp_u8(s.alarm_volume, 0, 100);
     g_flow_end_led = clamp_u8(s.alarm_end_brightness, 0, 255);
+    g_flow_immediate_ramp_start = immediate_ramp_start && !skip_ramp;
     g_audio_started = false;
     g_outputs_paused_for_hold = false;
     g_hold_dismiss_latched = false;
@@ -316,12 +319,17 @@ static bool compute_current_flow_levels(uint32_t now_ms,
     }
 
     const uint32_t flow_elapsed_ms = now_ms - g_ramp_start_ms;
-    const uint16_t lead_min = (g_flow_vol_ramp_min > g_flow_sun_ramp_min) ? g_flow_vol_ramp_min : g_flow_sun_ramp_min;
-    const uint32_t lead_ms = (uint32_t)lead_min * 60U * 1000U;
     const uint32_t vol_ramp_ms = (uint32_t)g_flow_vol_ramp_min * 60U * 1000U;
     const uint32_t sun_ramp_ms = (uint32_t)g_flow_sun_ramp_min * 60U * 1000U;
-    const uint32_t vol_start_offset_ms = lead_ms - vol_ramp_ms;
-    const uint32_t sun_start_offset_ms = lead_ms - sun_ramp_ms;
+
+    uint32_t vol_start_offset_ms = 0;
+    uint32_t sun_start_offset_ms = 0;
+    if (!g_flow_immediate_ramp_start) {
+        const uint16_t lead_min = (g_flow_vol_ramp_min > g_flow_sun_ramp_min) ? g_flow_vol_ramp_min : g_flow_sun_ramp_min;
+        const uint32_t lead_ms = (uint32_t)lead_min * 60U * 1000U;
+        vol_start_offset_ms = lead_ms - vol_ramp_ms;
+        sun_start_offset_ms = lead_ms - sun_ramp_ms;
+    }
 
     *out_audio_active = flow_elapsed_ms >= vol_start_offset_ms;
     *out_led_active = flow_elapsed_ms >= sun_start_offset_ms;
@@ -359,7 +367,7 @@ void alarm_manager_check_trigger() {
     // even when a one-time alarm has disabled future scheduling.
     if (g_state == AlarmState::SNOOZING) {
         if (now.unixtime() >= g_snooze_until_epoch) {
-            start_alarm_flow(g_snooze_until_epoch, true);
+            start_alarm_flow(g_snooze_until_epoch, true, false);
         }
         return;
     }
@@ -396,7 +404,7 @@ void alarm_manager_check_trigger() {
         return;
     }
 
-    start_alarm_flow(alarm_epoch, false);
+    start_alarm_flow(alarm_epoch, false, false);
     maybe_complete_once_alarm_for_today(now);
     g_last_match_stamp = alarm_stamp;
 }
@@ -597,5 +605,5 @@ void alarm_manager_start_test() {
         return;
     }
     g_is_test = true;
-    start_alarm_flow(rtc_manager_get_time().unixtime(), true);
+    start_alarm_flow(rtc_manager_get_time().unixtime(), false, true);
 }

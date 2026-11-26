@@ -36,10 +36,6 @@ static void load_alarm() {
     settings.snooze_duration_min = prefs.getUShort ("snz_dur",      settings.snooze_duration_min);
     settings.hold_dismiss_sec    = prefs.getUChar  ("hold_sec",     settings.hold_dismiss_sec);
     settings.repeat_mode         = prefs.getUChar  ("alm_rep",      settings.repeat_mode);
-    settings.alarm_auto_loud_min = prefs.getUChar  ("alm_loud",     settings.alarm_auto_loud_min);
-    settings.alarm_auto_dismiss_min = prefs.getUChar("alm_dism",    settings.alarm_auto_dismiss_min);
-    if (settings.alarm_auto_loud_min > 5) settings.alarm_auto_loud_min = 5;
-    if (settings.alarm_auto_dismiss_min > 5) settings.alarm_auto_dismiss_min = 5;
 
     String mp3 = prefs.getString("alm_mp3", settings.alarm_mp3);
     strncpy(settings.alarm_mp3, mp3.c_str(), sizeof(settings.alarm_mp3) - 1);
@@ -73,8 +69,6 @@ static void save_alarm() {
     prefs.putUShort("snz_dur",      settings.snooze_duration_min);
     prefs.putUChar ("hold_sec",     settings.hold_dismiss_sec);
     prefs.putUChar ("alm_rep",      settings.repeat_mode);
-    prefs.putUChar ("alm_loud",     settings.alarm_auto_loud_min);
-    prefs.putUChar ("alm_dism",     settings.alarm_auto_dismiss_min);
     prefs.putString("alm_mp3",      settings.alarm_mp3);
 }
 
@@ -122,16 +116,24 @@ static void save_leds() {
 
 static void load_other() {
     settings.auto_led_off_min = prefs.getUShort("led_auto_off", settings.auto_led_off_min);
+    settings.alarm_auto_loud_min = prefs.getUChar("alm_loud", settings.alarm_auto_loud_min);
+    settings.alarm_auto_dismiss_min = prefs.getUChar("alm_dism", settings.alarm_auto_dismiss_min);
+
     const uint16_t value = settings.auto_led_off_min;
-    if (value < 10 || value > 360 ||
+    if ((value != 1 && value < 10) || value > 360 ||
         (value > 60 && (value % 60) != 0) ||
-        (value <= 60 && (value % 10) != 0)) {
+        (value <= 60 && value != 1 && (value % 10) != 0)) {
         settings.auto_led_off_min = 10;
     }
+
+    if (settings.alarm_auto_loud_min > 5) settings.alarm_auto_loud_min = 5;
+    if (settings.alarm_auto_dismiss_min > 5) settings.alarm_auto_dismiss_min = 5;
 }
 
 static void save_other() {
     prefs.putUShort("led_auto_off", settings.auto_led_off_min);
+    prefs.putUChar("alm_loud", settings.alarm_auto_loud_min);
+    prefs.putUChar("alm_dism", settings.alarm_auto_dismiss_min);
 }
 
 static void load_home_page() {

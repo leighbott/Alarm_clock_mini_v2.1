@@ -13,20 +13,23 @@ static constexpr int DISP_H = 142;
 static constexpr int HEADER_H = 34;
 static constexpr int CONTENT_Y = 36;
 static constexpr int CONTENT_H = DISP_H - CONTENT_Y;
-static constexpr int TILE_COUNT = 5;
+static constexpr int TILE_COUNT = 7;
+static constexpr int TILES_PER_PAGE = 5;
+static constexpr int PAGE_COUNT = (TILE_COUNT + TILES_PER_PAGE - 1) / TILES_PER_PAGE;
 static constexpr int PAGE_DOT_W = 16;
 static constexpr int CONTENT_PAD_X = 6;
 static constexpr int CONTENT_GAP_X = 4;
 static constexpr int MAIN_COL_START_X = CONTENT_PAD_X + PAGE_DOT_W;
 static constexpr int MAIN_COL_AVAILABLE_W = DISP_W - MAIN_COL_START_X - CONTENT_PAD_X;
-static constexpr int COL_W = (MAIN_COL_AVAILABLE_W - ((TILE_COUNT - 1) * CONTENT_GAP_X)) / TILE_COUNT;
-static constexpr int VALUE_W = 72;
+static constexpr int COL_W = (MAIN_COL_AVAILABLE_W - ((TILES_PER_PAGE - 1) * CONTENT_GAP_X)) / TILES_PER_PAGE;
+// Keep equal-size squircles with ~5 px spacing between adjacent shells.
+static constexpr int VALUE_W = 75;
 static constexpr int VALUE_H = 68;
 static constexpr int VALUE_Y = 36;
 static constexpr int SWATCH_SIZE = 28;
-static constexpr uint8_t AUTO_OFF_OPTION_COUNT = 11;
+static constexpr uint8_t AUTO_OFF_OPTION_COUNT = 12;
 static const uint16_t AUTO_OFF_OPTIONS[AUTO_OFF_OPTION_COUNT] = {
-    10, 20, 30, 40, 50, 60, 120, 180, 240, 300, 360
+    1, 10, 20, 30, 40, 50, 60, 120, 180, 240, 300, 360
 };
 
 static lv_obj_t *g_screen = nullptr;
@@ -37,10 +40,13 @@ static lv_timer_t *g_pending_action_timer = nullptr;
 static UiOtherAction g_pending_action = UiOtherAction::NONE;
 static UiOtherAction g_deferred_action = UiOtherAction::NONE;
 
-static lv_obj_t *g_tiles[TILE_COUNT] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+static lv_obj_t *g_columns[TILE_COUNT] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+static lv_obj_t *g_tiles[TILE_COUNT] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
 static lv_obj_t *g_swatches[2] = {nullptr, nullptr};
-static lv_obj_t *g_value_labels[TILE_COUNT] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+static lv_obj_t *g_value_labels[TILE_COUNT] = {nullptr, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr};
+static lv_obj_t *g_page_dots[PAGE_COUNT] = {nullptr, nullptr};
 static uint8_t g_selected_tile = 0;
+static uint8_t g_page_start = 0;
 
 // Baseline captured when the Other menu is entered, restored on CANCEL.
 static bool g_base_front_on = false;
@@ -52,11 +58,15 @@ static uint8_t g_base_back_brightness = 0;
 static uint16_t g_base_back_hue = 0;
 static uint8_t g_base_back_sat = 100;
 static uint16_t g_base_auto_led_off_min = 0;
+static uint8_t g_base_auto_loud_min = 0;
+static uint8_t g_base_auto_dismiss_min = 0;
 
 static void update_auto_off_value() {
     if (!g_value_labels[3]) return;
     const uint16_t minutes = storage_manager_get().auto_led_off_min;
-    if (minutes < 60) {
+    if (minutes == 1) {
+        lv_label_set_text(g_value_labels[3], "10s");
+    } else if (minutes < 60) {
         char value[8];
         std::snprintf(value, sizeof(value), "%um", (unsigned)minutes);
         lv_label_set_text(g_value_labels[3], value);
@@ -71,6 +81,32 @@ static void update_auto_off_value() {
             char value[16];
             std::snprintf(value, sizeof(value), "%uhr\\n%um", (unsigned)hours, (unsigned)remainder);
             lv_label_set_text(g_value_labels[3], value);
+        }
+    }
+}
+
+static void update_auto_alarm_values() {
+    if (g_value_labels[4]) {
+        const uint8_t minutes = (storage_manager_get().alarm_auto_loud_min > 5)
+                                    ? 5
+                                    : storage_manager_get().alarm_auto_loud_min;
+        if (minutes == 0) lv_label_set_text(g_value_labels[4], "Off");
+        else {
+            char value[8];
+            std::snprintf(value, sizeof(value), "%umin", (unsigned)minutes);
+            lv_label_set_text(g_value_labels[4], value);
+        }
+    }
+
+    if (g_value_labels[5]) {
+        const uint8_t minutes = (storage_manager_get().alarm_auto_dismiss_min > 5)
+                                    ? 5
+                                    : storage_manager_get().alarm_auto_dismiss_min;
+        if (minutes == 0) lv_label_set_text(g_value_labels[5], "Off");
+        else {
+            char value[8];
+            std::snprintf(value, sizeof(value), "%umin", (unsigned)minutes);
+            lv_label_set_text(g_value_labels[5], value);
         }
     }
 }
@@ -204,6 +240,7 @@ static lv_obj_t *create_column(lv_obj_t *parent, int x, uint8_t index, const cha
     lv_obj_set_style_border_width(column, 0, 0);
     lv_obj_set_style_pad_all(column, 0, 0);
     lv_obj_set_scrollable(column, false);
+    g_columns[index] = column;
 
     lv_obj_t *title_label = lv_label_create(column);
     lv_label_set_text(title_label, title);
@@ -217,6 +254,52 @@ static lv_obj_t *create_column(lv_obj_t *parent, int x, uint8_t index, const cha
 
     g_tiles[index] = create_value_shell(column, 0);
     return g_tiles[index];
+}
+
+static void create_page_dots(lv_obj_t *parent) {
+    const int dot_h = 8;
+    const int gap = 12;
+    const int total_h = (PAGE_COUNT * dot_h) + ((PAGE_COUNT - 1) * gap);
+    const int start_y = (CONTENT_H - total_h) / 2;
+
+    for (uint8_t i = 0; i < PAGE_COUNT; ++i) {
+        lv_obj_t *dot = lv_obj_create(parent);
+        lv_obj_set_size(dot, 8, 8);
+        lv_obj_set_pos(dot, 6, start_y + i * (dot_h + gap));
+        lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+        lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN);
+        lv_obj_set_style_pad_all(dot, 0, LV_PART_MAIN);
+        lv_obj_set_scrollable(dot, false);
+        g_page_dots[i] = dot;
+    }
+}
+
+static void update_page_dots() {
+    const uint8_t active_page = g_selected_tile / TILES_PER_PAGE;
+    for (uint8_t i = 0; i < PAGE_COUNT; ++i) {
+        if (!g_page_dots[i]) continue;
+        lv_obj_set_style_bg_color(g_page_dots[i],
+                                  (i == active_page) ? lv_color_white() : lv_color_make(0x42, 0x42, 0x42),
+                                  LV_PART_MAIN);
+        lv_obj_set_style_bg_opa(g_page_dots[i], LV_OPA_COVER, LV_PART_MAIN);
+    }
+}
+
+static void update_tile_page() {
+    g_page_start = (g_selected_tile / TILES_PER_PAGE) * TILES_PER_PAGE;
+    for (uint8_t i = 0; i < TILE_COUNT; ++i) {
+        if (!g_columns[i]) continue;
+        const bool visible = (i >= g_page_start) && (i < (uint8_t)(g_page_start + TILES_PER_PAGE));
+        if (visible) {
+            const uint8_t slot = (uint8_t)(i - g_page_start);
+            const int x = MAIN_COL_START_X + slot * (COL_W + CONTENT_GAP_X);
+            lv_obj_set_pos(g_columns[i], x, 0);
+            lv_obj_set_hidden(g_columns[i], false);
+        } else {
+            lv_obj_set_hidden(g_columns[i], true);
+        }
+    }
+    update_page_dots();
 }
 
 static void create_led_column(lv_obj_t *parent, int x, uint8_t index, const char *title,
@@ -279,18 +362,26 @@ void ui_other_init() {
     lv_obj_set_style_pad_all(content, 0, 0);
     lv_obj_set_scrollable(content, false);
 
-    create_led_column(content, MAIN_COL_START_X, 0, "Front LED", &g_swatches[0]);
+    create_page_dots(content);
+
+    create_led_column(content, MAIN_COL_START_X, 0, "Front\nLED", &g_swatches[0]);
     create_led_column(content, MAIN_COL_START_X + COL_W + CONTENT_GAP_X, 1,
-                      "Rear LED", &g_swatches[1]);
+                      "Rear\nLED", &g_swatches[1]);
     create_value_column(content, MAIN_COL_START_X + 2 * (COL_W + CONTENT_GAP_X),
                        2, "Home Page", "Select");
     create_value_column(content, MAIN_COL_START_X + 3 * (COL_W + CONTENT_GAP_X),
                        3, "Auto LED Off", "");
     create_value_column(content, MAIN_COL_START_X + 4 * (COL_W + CONTENT_GAP_X),
-                       4, "Test Alarm", "Start");
+                       4, "Auto\nLoud", "Off");
+    create_value_column(content, MAIN_COL_START_X + 5 * (COL_W + CONTENT_GAP_X),
+                       5, "Auto\nDismiss", "Off");
+    create_value_column(content, MAIN_COL_START_X + 6 * (COL_W + CONTENT_GAP_X),
+                       6, "Test\nAlarm", "Start");
     update_auto_off_value();
+    update_auto_alarm_values();
 
     g_selected_tile = 0;
+    update_tile_page();
     update_tile_focus();
     ui_other_refresh_previews();
 }
@@ -322,9 +413,18 @@ void ui_other_on_enter() {
     g_base_back_hue = led_manager_get_hue_back();
     g_base_back_sat = led_manager_get_sat_back();
     g_base_auto_led_off_min = storage_manager_get().auto_led_off_min;
+    g_base_auto_loud_min = (storage_manager_get().alarm_auto_loud_min > 5)
+                               ? 5
+                               : storage_manager_get().alarm_auto_loud_min;
+    g_base_auto_dismiss_min = (storage_manager_get().alarm_auto_dismiss_min > 5)
+                                  ? 5
+                                  : storage_manager_get().alarm_auto_dismiss_min;
 
     ui_other_refresh_previews();
     update_auto_off_value();
+    update_auto_alarm_values();
+    update_tile_page();
+    update_tile_focus();
 }
 
 UiOtherAction ui_other_handle_inputs(int32_t enc1_delta,
@@ -351,7 +451,10 @@ UiOtherAction ui_other_handle_inputs(int32_t enc1_delta,
         led_manager_set_back(g_base_back_brightness);
         if (led_manager_is_back_on() != g_base_back_on) led_manager_toggle_back();
         storage_manager_get().auto_led_off_min = g_base_auto_led_off_min;
+        storage_manager_get().alarm_auto_loud_min = g_base_auto_loud_min;
+        storage_manager_get().alarm_auto_dismiss_min = g_base_auto_dismiss_min;
         update_auto_off_value();
+        update_auto_alarm_values();
 
         trigger_header_flash(false);
         queue_action_after_flash(UiOtherAction::CANCEL);
@@ -378,6 +481,7 @@ UiOtherAction ui_other_handle_inputs(int32_t enc1_delta,
         if (next < 0) next = TILE_COUNT - 1;
         if (next >= TILE_COUNT) next = 0;
         g_selected_tile = (uint8_t)next;
+        update_tile_page();
         update_tile_focus();
     }
 
@@ -397,11 +501,27 @@ UiOtherAction ui_other_handle_inputs(int32_t enc1_delta,
             update_auto_off_value();
             return UiOtherAction::NONE;
         }
+        if (g_selected_tile == 4) {
+            int16_t next = (int16_t)storage_manager_get().alarm_auto_loud_min + (int16_t)enc2_delta;
+            if (next < 0) next = 0;
+            if (next > 5) next = 5;
+            storage_manager_get().alarm_auto_loud_min = (uint8_t)next;
+            update_auto_alarm_values();
+            return UiOtherAction::NONE;
+        }
+        if (g_selected_tile == 5) {
+            int16_t next = (int16_t)storage_manager_get().alarm_auto_dismiss_min + (int16_t)enc2_delta;
+            if (next < 0) next = 0;
+            if (next > 5) next = 5;
+            storage_manager_get().alarm_auto_dismiss_min = (uint8_t)next;
+            update_auto_alarm_values();
+            return UiOtherAction::NONE;
+        }
         switch (g_selected_tile) {
             case 0: return UiOtherAction::ENTER_LED1;
             case 1: return UiOtherAction::ENTER_LED2;
             case 2: return UiOtherAction::ENTER_HOME_PAGE;
-            case 4: return UiOtherAction::TEST_ALARM;
+            case 6: return UiOtherAction::TEST_ALARM;
             default: return UiOtherAction::NONE;
         }
     }
